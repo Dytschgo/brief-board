@@ -1,0 +1,7 @@
+config.json
+server.pid
+server.log
+data/*.json
+data/*.jsonl
+node_modules/
+data-demo/
