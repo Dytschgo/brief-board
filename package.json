@@ -1,0 +1,15 @@
+{
+  "name": "brief-board",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Major weekday brief board: triage, overview and archive (local UI, zero dependencies).",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "demo": "node scripts/seed-demo.js && node -e \"process.env.BRIEF_DATA='data-demo';process.env.BRIEF_CONFIG='data-demo/config.json';require('./server.js')\"",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

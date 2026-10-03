@@ -3,16 +3,16 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { Store, readJson, writeJson, ACTIONS } = require('./lib/store');
+const { Outbox } = require('./lib/outbox');
 
 const ROOT = __dirname;
-const DATA = path.join(ROOT, 'data');
+const DATA = path.resolve(process.env.BRIEF_DATA || path.join(ROOT, 'data'));
 const ASSETS = path.join(ROOT, 'assets');
 const PUBLIC = path.join(ROOT, 'public');
-const CONFIG_PATH = path.join(ROOT, 'config.json');
-const BOARD_PATH = path.join(DATA, 'board.json');
-const DISMISSED_PATH = path.join(DATA, 'dismissed.json');
-const HISTORY_PATH = path.join(DATA, 'history.json');
-const FAIL_PATH = path.join(DATA, 'failed-posts.jsonl');
+const CONFIG_PATH = path.resolve(process.env.BRIEF_CONFIG || path.join(ROOT, 'config.json'));
+
+fs.mkdirSync(DATA, { recursive: true });
 
 function loadConfig() {
   let c = { url: '', key: '', port: 8787 };
@@ -25,203 +25,36 @@ function loadConfig() {
     };
   } catch (_) {}
   if (!c.key && process.env.key) c.key = process.env.key;
+  if (process.env.PORT) c.port = Number(process.env.PORT) || c.port;
   return c;
 }
 
-function readJson(p, fallback) {
-  try {
-    return JSON.parse(fs.readFileSync(p, 'utf8'));
-  } catch (_) {
-    return fallback;
-  }
-}
+const store = new Store(DATA);
+const outbox = new Outbox(DATA, loadConfig);
 
-function writeJson(p, obj) {
-  const tmp = p + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
-  fs.renameSync(tmp, p);
-}
+// ---- live updates (SSE) ---------------------------------------------------
 
-function loadDismissed() {
-  const d = readJson(DISMISSED_PATH, { dismissed: [] });
-  if (!Array.isArray(d.dismissed)) d.dismissed = [];
-  return d;
+const clients = new Set();
+function broadcast(event, data) {
+  const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const res of clients) res.write(msg);
 }
+let lastSig = '';
+function boardChanged() {
+  const v = store.view();
+  lastSig = v.items.map((i) => i.id).join(',') + '|' + v.updated_at;
+  broadcast('board', { updated_at: v.updated_at, open: v.items.length });
+  return v;
+}
+outbox.onChange = (s) => broadcast('sync', s);
+// Snoozed items come due on their own; tell open tabs when that happens.
+setInterval(() => {
+  const v = store.view();
+  const sig = v.items.map((i) => i.id).join(',') + '|' + v.updated_at;
+  if (sig !== lastSig) boardChanged();
+}, 60_000).unref();
 
-function dismissedIdSet() {
-  return new Set(loadDismissed().dismissed.map((x) => x && x.id).filter(Boolean));
-}
-
-function loadHistory() {
-  const h = readJson(HISTORY_PATH, { later: [], done: [] });
-  if (!Array.isArray(h.later)) h.later = [];
-  if (!Array.isArray(h.done)) h.done = [];
-  return h;
-}
-
-function emptyBoard() {
-  return { kind: 'Morning', date: '', updated_at: '', items: [] };
-}
-
-function readBoardRaw() {
-  const board = readJson(BOARD_PATH, emptyBoard());
-  if (!Array.isArray(board.items)) board.items = [];
-  return board;
-}
-
-function visibleItems(items) {
-  const ids = dismissedIdSet();
-  return (items || []).filter((it) => {
-    if (!it || !it.id || ids.has(it.id)) return false;
-    if (it.status === 'later' || it.status === 'done') return false;
-    return true;
-  });
-}
-
-function loadBoard() {
-  const board = readBoardRaw();
-  return Object.assign({}, board, { items: visibleItems(board.items) });
-}
-
-function persistBoard(board) {
-  const next = Object.assign({}, board, {
-    items: visibleItems(board.items),
-    updated_at: new Date().toISOString(),
-  });
-  writeJson(BOARD_PATH, next);
-  return next;
-}
-
-function saveBoard(board) {
-  const hist = loadHistory();
-  const ids = dismissedIdSet();
-  const open = [];
-  for (const it of board.items || []) {
-    if (!it || !it.id || ids.has(it.id)) continue;
-    if (it.status === 'later') {
-      hist.done = hist.done.filter((x) => x.id !== it.id);
-      const i = hist.later.findIndex((x) => x.id === it.id);
-      if (i >= 0) hist.later[i] = it;
-      else hist.later.push(it);
-    } else if (it.status === 'done') {
-      hist.later = hist.later.filter((x) => x.id !== it.id);
-      const i = hist.done.findIndex((x) => x.id === it.id);
-      if (i >= 0) hist.done[i] = it;
-      else hist.done.push(it);
-    } else {
-      open.push(it);
-    }
-  }
-  writeJson(HISTORY_PATH, hist);
-  return persistBoard(Object.assign({}, board, { items: open }));
-}
-
-function migrate() {
-  const raw = readBoardRaw();
-  const hist = loadHistory();
-  let moved = false;
-  const open = [];
-  for (const it of raw.items) {
-    if (!it || !it.id) continue;
-    if (it.status === 'later' || it.status === 'done') {
-      const bucket = it.status === 'later' ? 'later' : 'done';
-      const other = bucket === 'later' ? 'done' : 'later';
-      hist[other] = hist[other].filter((x) => x.id !== it.id);
-      const i = hist[bucket].findIndex((x) => x.id === it.id);
-      const copy = Object.assign({}, it, { acted_at: it.acted_at || new Date().toISOString() });
-      if (i >= 0) hist[bucket][i] = copy;
-      else hist[bucket].push(copy);
-      moved = true;
-    } else {
-      open.push(it);
-    }
-  }
-  if (moved) {
-    writeJson(HISTORY_PATH, hist);
-    writeJson(BOARD_PATH, Object.assign({}, raw, {
-      items: visibleItems(open),
-      updated_at: new Date().toISOString(),
-    }));
-  } else if (!fs.existsSync(HISTORY_PATH)) {
-    writeJson(HISTORY_PATH, hist);
-  }
-}
-
-function logFail(entry) {
-  const safe = {
-    at: new Date().toISOString(),
-    action: entry.action || '',
-    item_id: entry.item_id || '',
-    lane: entry.lane || '',
-    title: entry.title || '',
-    note: entry.note || '',
-    reason: entry.reason || 'unknown',
-  };
-  fs.appendFileSync(FAIL_PATH, JSON.stringify(safe) + '\n');
-}
-
-function postWebhook(cfg, bodyObj) {
-  return new Promise((resolve) => {
-    if (!cfg.url) {
-      resolve({ ok: false, reason: 'url_empty' });
-      return;
-    }
-    try {
-      new URL(cfg.url);
-    } catch (_) {
-      resolve({ ok: false, reason: 'bad_url' });
-      return;
-    }
-    let settled = false;
-    const done = (v) => {
-      if (settled) return;
-      settled = true;
-      resolve(v);
-    };
-    const req = httpRequest(cfg.url, bodyObj, cfg.key, done);
-    const timer = setTimeout(() => {
-      try { req.destroy(); } catch (_) {}
-      done({ ok: false, reason: 'timeout' });
-    }, 8000);
-    req.on('close', () => clearTimeout(timer));
-  });
-}
-
-function httpRequest(urlStr, bodyObj, key, done) {
-  const u = new URL(urlStr);
-  const payload = Buffer.from(JSON.stringify(bodyObj));
-  const lib = u.protocol === 'https:' ? require('https') : require('http');
-  const req = lib.request(
-    {
-      protocol: u.protocol,
-      hostname: u.hostname,
-      port: u.port || (u.protocol === 'https:' ? 443 : 80),
-      path: u.pathname + u.search,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': payload.length,
-        Authorization: 'Bearer ' + key,
-        'X-Automation-Key': key,
-      },
-      timeout: 8000,
-    },
-    (res) => {
-      res.resume();
-      res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) done({ ok: true, status: res.statusCode });
-        else done({ ok: false, reason: 'http_' + res.statusCode });
-      });
-    }
-  );
-  req.on('timeout', () => {
-    req.destroy();
-    done({ ok: false, reason: 'timeout' });
-  });
-  req.on('error', () => done({ ok: false, reason: 'network' }));
-  req.end(payload);
-  return req;
-}
+// ---- http helpers ---------------------------------------------------------
 
 function readBody(req, limit) {
   return new Promise((resolve, reject) => {
@@ -249,277 +82,142 @@ function readBody(req, limit) {
   });
 }
 
-function send(res, code, obj, extraHeaders) {
-  const body = typeof obj === 'string' ? obj : JSON.stringify(obj);
-  const headers = Object.assign(
-    {
-      'Content-Type': typeof obj === 'string' ? 'text/html; charset=utf-8' : 'application/json; charset=utf-8',
-      'Cache-Control': 'no-store',
-    },
-    extraHeaders || {}
-  );
-  res.writeHead(code, headers);
-  res.end(body);
+function send(res, code, obj) {
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(obj));
 }
 
-function mime(p) {
-  if (p.endsWith('.svg')) return 'image/svg+xml';
-  if (p.endsWith('.png')) return 'image/png';
-  if (p.endsWith('.css')) return 'text/css; charset=utf-8';
-  if (p.endsWith('.js')) return 'text/javascript; charset=utf-8';
-  if (p.endsWith('.html')) return 'text/html; charset=utf-8';
-  return 'application/octet-stream';
+const MIME = {
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8', '.html': 'text/html; charset=utf-8',
+};
+
+function serveFile(res, dir, rel, cache) {
+  if (!rel || rel.includes('..') || rel.includes('/') || rel.includes('\\')) return send(res, 400, { ok: false, error: 'bad_path' });
+  const fp = path.join(dir, rel);
+  if (!fp.startsWith(dir) || !fs.existsSync(fp)) return send(res, 404, { ok: false, error: 'not_found' });
+  res.writeHead(200, {
+    'Content-Type': MIME[path.extname(fp)] || 'application/octet-stream',
+    'Cache-Control': cache || 'no-store',
+  });
+  fs.createReadStream(fp).pipe(res);
 }
 
-function findItem(board, hist, itemId) {
-  const pools = [board.items, hist.later, hist.done];
-  for (const list of pools) {
-    const found = (list || []).find((x) => x && x.id === itemId);
-    if (found) return Object.assign({}, found);
-  }
-  return null;
+function webhookPayload(rec, action, extra) {
+  return Object.assign({
+    action, item_id: rec.id, lane: rec.lane, title: rec.title, note: action === 'note' || action === 'do' ? rec.note || '' : '',
+  }, extra || {});
 }
 
-function stripEverywhere(board, hist, itemId) {
-  board.items = (board.items || []).filter((x) => x && x.id !== itemId);
-  hist.later = hist.later.filter((x) => x && x.id !== itemId);
-  hist.done = hist.done.filter((x) => x && x.id !== itemId);
-}
+const SHELL_ROUTES = new Set(['/', '/index.html', '/history', '/history.html', '/overview', '/archive']);
 
-function applyAction(body) {
-  const action = String(body.action || '');
-  const itemId = String(body.item_id || '');
-  const board = readBoardRaw();
-  const hist = loadHistory();
-
-  if (action === 'dismiss') {
-    if (itemId) {
-      const item = findItem(board, hist, itemId);
-      stripEverywhere(board, hist, itemId);
-      const d = loadDismissed();
-      if (!d.dismissed.some((x) => x.id === itemId)) {
-        const title = (item && item.title) || body.title || itemId;
-        const snap = item || {
-          id: itemId,
-          title: String(title),
-          body: '',
-          lane: String(body.lane || 'need-you'),
-          status: 'open',
-          note: String(body.note || ''),
-          image: '/assets/quiet.svg',
-        };
-        d.dismissed.push({
-          id: itemId,
-          title: String(title),
-          at: new Date().toISOString(),
-          item: snap,
-        });
-        writeJson(DISMISSED_PATH, d);
-      }
-      writeJson(HISTORY_PATH, hist);
-    }
-    return persistBoard(board);
-  }
-
-  if ((action === 'later' || action === 'do' || action === 'note') && itemId) {
-    const item = findItem(board, hist, itemId);
-    if (item) {
-      stripEverywhere(board, hist, itemId);
-      if (action === 'note') item.note = typeof body.note === 'string' ? body.note : '';
-      else if (typeof body.note === 'string' && body.note) item.note = body.note;
-      item.acted_at = new Date().toISOString();
-      if (action === 'later') {
-        item.status = 'later';
-        hist.later.push(item);
-      } else {
-        item.status = 'done';
-        hist.done.push(item);
-      }
-      writeJson(HISTORY_PATH, hist);
-    }
-    return persistBoard(board);
-  }
-
-  return loadBoard();
-}
-
-function reopenItem(itemId, from) {
-  const board = readBoardRaw();
-  const hist = loadHistory();
-  let item = null;
-
-  if (from === 'later' || from === 'done') {
-    const list = from === 'later' ? hist.later : hist.done;
-    item = list.find((x) => x && x.id === itemId) || null;
-    if (!item) return { ok: false, error: 'not_found' };
-    stripEverywhere(board, hist, itemId);
-    writeJson(HISTORY_PATH, hist);
-  } else {
-    const d = loadDismissed();
-    const rec = d.dismissed.find((x) => x && x.id === itemId);
-    if (!rec) return { ok: false, error: 'not_found' };
-    d.dismissed = d.dismissed.filter((x) => x.id !== itemId);
-    writeJson(DISMISSED_PATH, d);
-    item = rec.item && typeof rec.item === 'object'
-      ? Object.assign({}, rec.item)
-      : {
-          id: itemId,
-          title: rec.title || itemId,
-          body: '',
-          lane: 'need-you',
-          image: '/assets/quiet.svg',
-          note: '',
-        };
-    stripEverywhere(board, hist, itemId);
-    writeJson(HISTORY_PATH, hist);
-  }
-
-  item.status = 'open';
-  item.id = itemId;
-  if (!board.items.some((x) => x && x.id === itemId)) board.items.push(item);
-  const saved = persistBoard(board);
-  return { ok: true, board: saved };
-}
+// ---- routes ---------------------------------------------------------------
 
 const server = http.createServer(async (req, res) => {
   try {
     const u = new URL(req.url, 'http://127.0.0.1');
-    const pathname = u.pathname;
+    const p = u.pathname;
+    const GET = req.method === 'GET';
+    const POST = req.method === 'POST';
 
-    if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
-      const html = fs.readFileSync(path.join(PUBLIC, 'index.html'));
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(html);
+    if (GET && SHELL_ROUTES.has(p)) return serveFile(res, PUBLIC, 'index.html');
+    if (GET && /^\/(app\.css|app\.js|charts\.js|glyphs\.js)$/.test(p)) return serveFile(res, PUBLIC, p.slice(1));
+    if (GET && p.startsWith('/assets/')) return serveFile(res, ASSETS, p.slice(8), 'public, max-age=3600');
+
+    if (GET && p === '/api/stream') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
+      res.write(`event: sync\ndata: ${JSON.stringify(outbox.status())}\n\n`);
+      clients.add(res);
+      const ping = setInterval(() => res.write(': ping\n\n'), 25_000);
+      req.on('close', () => { clearInterval(ping); clients.delete(res); });
       return;
     }
 
-    if (req.method === 'GET' && (pathname === '/history' || pathname === '/overview' || pathname === '/history.html')) {
-      const html = fs.readFileSync(path.join(PUBLIC, 'history.html'));
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(html);
-      return;
+    if (GET && p === '/api/board') return send(res, 200, store.view());
+    if (GET && p === '/api/history') return send(res, 200, store.history());
+    if (GET && p === '/api/dismissed') return send(res, 200, { dismissed: store.history().dismissed });
+    if (GET && p === '/api/stats') return send(res, 200, store.stats());
+    if (GET && p === '/api/briefs') return send(res, 200, { briefs: store.briefs() });
+    if (GET && p.startsWith('/api/briefs/')) {
+      const b = store.brief(decodeURIComponent(p.slice(12)), u.searchParams.get('kind'));
+      return b ? send(res, 200, b) : send(res, 404, { ok: false, error: 'not_found' });
     }
-
-    if (req.method === 'GET' && pathname === '/brief.css') {
-      const css = fs.readFileSync(path.join(PUBLIC, 'brief.css'));
-      res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(css);
-      return;
+    if (GET && p === '/api/search') {
+      return send(res, 200, { items: store.search(u.searchParams.get('q'), u.searchParams.get('status')) });
     }
+    if (GET && p === '/api/status') return send(res, 200, outbox.status());
 
-    if (req.method === 'GET' && pathname.startsWith('/assets/')) {
-      const rel = pathname.slice('/assets/'.length);
-      if (rel.includes('..') || rel.includes('/') || rel.includes('\\')) {
-        send(res, 400, { ok: false, error: 'bad_path' });
-        return;
-      }
-      const fp = path.join(ASSETS, rel);
-      if (!fp.startsWith(ASSETS) || !fs.existsSync(fp)) {
-        send(res, 404, { ok: false, error: 'not_found' });
-        return;
-      }
-      res.writeHead(200, { 'Content-Type': mime(fp), 'Cache-Control': 'public, max-age=3600' });
-      fs.createReadStream(fp).pipe(res);
-      return;
-    }
-
-    if (req.method === 'GET' && pathname === '/api/board') {
-      send(res, 200, loadBoard());
-      return;
-    }
-
-    if (req.method === 'GET' && pathname === '/api/history') {
-      const hist = loadHistory();
-      send(res, 200, {
-        later: hist.later,
-        done: hist.done,
-        dismissed: loadDismissed().dismissed,
-      });
-      return;
-    }
-
-    if (req.method === 'GET' && pathname === '/api/dismissed') {
-      send(res, 200, loadDismissed());
-      return;
-    }
-
-    if (req.method === 'POST' && pathname === '/api/board') {
+    if (POST && p === '/api/board') {
       const body = await readBody(req, 1_000_000);
-      if (!body || typeof body !== 'object' || !Array.isArray(body.items)) {
-        send(res, 400, { ok: false, error: 'bad_board' });
-        return;
-      }
-      const saved = saveBoard(body);
-      send(res, 200, { ok: true, board: saved });
-      return;
+      if (!body || typeof body !== 'object' || !Array.isArray(body.items)) return send(res, 400, { ok: false, error: 'bad_board' });
+      store.ingest(body);
+      return send(res, 200, { ok: true, board: boardChanged() });
     }
 
-    if (req.method === 'POST' && pathname === '/api/reopen') {
+    if (POST && p === '/api/action') {
       const body = await readBody(req, 64_000);
-      const itemId = String((body && body.item_id) || '');
-      const from = String((body && (body.from || body.bucket)) || 'dismissed');
-      if (!itemId) {
-        send(res, 400, { ok: false, error: 'item_id_required' });
-        return;
-      }
-      const result = reopenItem(itemId, from === 'later' || from === 'done' ? from : 'dismissed');
-      send(res, result.ok ? 200 : 404, result);
-      return;
-    }
-
-    if (req.method === 'POST' && pathname === '/api/action') {
-      const body = await readBody(req, 64_000);
-      const action = String((body && body.action) || '');
-      const payload = {
-        action,
-        item_id: String((body && body.item_id) || ''),
-        lane: String((body && body.lane) || ''),
-        title: String((body && body.title) || ''),
-        note: String((body && body.note) || ''),
-      };
-
+      const action = String(body.action || '');
       if (action === 'probe') {
         const cfg = loadConfig();
-        if (!cfg.url) {
-          send(res, 200, { ok: true, webhook: false, reason: 'url_empty' });
-          return;
-        }
-        const wh = await postWebhook(cfg, payload);
-        if (!wh.ok) logFail(Object.assign({}, payload, { reason: wh.reason }));
-        send(res, 200, { ok: true, webhook: !!wh.ok });
-        return;
+        if (!cfg.url) return send(res, 200, { ok: true, webhook: false, reason: 'url_empty' });
+        const r = await outbox.probe({ action: 'probe', item_id: '', lane: '', title: '', note: '' });
+        return send(res, 200, { ok: true, webhook: !!r.ok, reason: r.reason });
       }
+      if (!ACTIONS.includes(action)) return send(res, 400, { ok: false, error: 'unknown_action' });
+      const rec = store.act(body);
+      if (!rec) return send(res, 404, { ok: false, error: 'not_found' });
+      const webhook = outbox.enqueue(webhookPayload(rec, action, rec.snooze_until ? { until: rec.snooze_until } : null));
+      return send(res, 200, { ok: true, webhook, item: store.public(rec, Date.now()), board: boardChanged() });
+    }
 
-      const known = action === 'dismiss' || action === 'do' || action === 'later' || action === 'note';
-      let board = null;
-      if (known) board = applyAction(payload);
-
-      const cfg = loadConfig();
-      let webhook = false;
-      if (cfg.url) {
-        const wh = await postWebhook(cfg, payload);
-        webhook = !!wh.ok;
-        if (!wh.ok) logFail(Object.assign({}, payload, { reason: wh.reason }));
-      } else if (known) {
-        logFail(Object.assign({}, payload, { reason: 'url_empty' }));
+    if (POST && p === '/api/bulk') {
+      const body = await readBody(req, 256_000);
+      const action = String(body.action || '');
+      const ids = Array.isArray(body.item_ids) ? body.item_ids.map(String).slice(0, 200) : [];
+      if (!ACTIONS.includes(action) || !ids.length) return send(res, 400, { ok: false, error: 'bad_bulk' });
+      const done = [];
+      for (const id of ids) {
+        const rec = store.act({ action, item_id: id, until: body.until });
+        if (!rec) continue;
+        done.push(id);
+        outbox.enqueue(webhookPayload(rec, action, rec.snooze_until ? { until: rec.snooze_until } : null));
       }
-      send(res, 200, { ok: true, webhook, board });
-      return;
+      return send(res, 200, { ok: true, item_ids: done, board: boardChanged() });
+    }
+
+    if (POST && p === '/api/undo') {
+      const body = await readBody(req, 64_000);
+      const r = store.undo(String(body.item_id || ''));
+      if (!r) return send(res, 404, { ok: false, error: 'nothing_to_undo' });
+      outbox.enqueue(webhookPayload(r.rec, 'undo', { reverted: r.reverted }));
+      return send(res, 200, { ok: true, reverted: r.reverted, board: boardChanged() });
+    }
+
+    if (POST && p === '/api/reopen') {
+      const body = await readBody(req, 64_000);
+      const id = String(body.item_id || '');
+      if (!id) return send(res, 400, { ok: false, error: 'item_id_required' });
+      const rec = store.reopen(id);
+      if (!rec) return send(res, 404, { ok: false, error: 'not_found' });
+      return send(res, 200, { ok: true, board: boardChanged() });
+    }
+
+    if (POST && p === '/api/outbox/retry') {
+      await outbox.retryNow();
+      return send(res, 200, Object.assign({ ok: true }, outbox.status()));
     }
 
     send(res, 404, { ok: false, error: 'not_found' });
   } catch (err) {
-    const msg = err && err.message === 'bad_json' ? 'bad_json' : 'error';
-    send(res, 400, { ok: false, error: msg });
+    const msg = err && (err.message === 'bad_json' || err.message === 'too_large') ? err.message : 'error';
+    if (!res.headersSent) send(res, 400, { ok: false, error: msg });
   }
 });
 
 function listen(port) {
   server.listen(port, '0.0.0.0', () => {
-    const disk = readJson(CONFIG_PATH, { url: '', key: '', port });
-    if (Number(disk.port) !== port) {
-      disk.port = port;
-      if (!disk.key && process.env.key) disk.key = process.env.key;
+    const disk = readJson(CONFIG_PATH, null);
+    if (disk && Number(disk.port) !== port && !process.env.PORT) {
       writeJson(CONFIG_PATH, { url: disk.url || '', key: disk.key || '', port });
     }
     fs.writeFileSync(path.join(ROOT, 'server.pid'), String(process.pid) + '\n');
@@ -527,6 +225,7 @@ function listen(port) {
   });
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
+      server.removeAllListeners('error');
       listen(port + 1);
       return;
     }
@@ -535,6 +234,5 @@ function listen(port) {
   });
 }
 
-migrate();
-const startPort = loadConfig().port || 8787;
-listen(startPort);
+outbox.start();
+listen(loadConfig().port || 8787);

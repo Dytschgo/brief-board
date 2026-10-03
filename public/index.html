@@ -2,199 +2,64 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Major · Brief</title>
-<link rel="stylesheet" href="/brief.css" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark light" />
+<title>Major</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,300..800&family=Geist:wght@300..700&display=swap" />
+<link rel="stylesheet" href="/app.css" />
+<script>
+  // Apply the saved theme before first paint.
+  try { const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t; } catch (_) {}
+</script>
 </head>
 <body>
-<div class="wrap">
-<header class="top">
-  <div>
-    <p class="brand">Major</p>
-    <h1 id="kind">Morning</h1>
-    <p class="date" id="date"></p>
-  </div>
-  <nav>
-    <a href="/" aria-current="page">Board</a>
-    <a href="/history">History</a>
+<a class="skip" href="#view">Skip to content</a>
+<div class="shell">
+  <nav class="rail" aria-label="Main">
+    <a class="mark" href="/" aria-label="Major, today">M</a>
+    <div class="rail-links">
+      <a href="/" data-route="today" title="Today (1)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h4l2 3h4l2-3h4"/><path d="M5.5 6.5 4 13v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5l-1.5-6.5A2 2 0 0 0 16.6 5H7.4a2 2 0 0 0-1.9 1.5z"/></svg>
+        <span>Today</span>
+      </a>
+      <a href="/overview" data-route="overview" title="Overview (2)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V11"/><path d="M12 20V4"/><path d="M19 20v-6"/></svg>
+        <span>Overview</span>
+      </a>
+      <a href="/archive" data-route="archive" title="Archive (3)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>
+        <span>Archive</span>
+      </a>
+    </div>
+    <div class="rail-foot">
+      <button type="button" class="sync" id="sync" aria-live="polite"><i></i><span class="sr">Sync status</span></button>
+      <button type="button" class="theme" id="theme" aria-label="Switch theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+      </button>
+    </div>
   </nav>
-</header>
-<main>
-  <section>
-    <h2 class="need">Need you</h2>
-    <div class="grid" id="need"></div>
-  </section>
-  <section>
-    <h2>Worth knowing</h2>
-    <div class="grid" id="know"></div>
-  </section>
-  <details class="quiet" id="quietWrap">
-    <summary id="quietSum">Quiet</summary>
-    <div class="quiet-row" id="quiet"></div>
-  </details>
-</main>
+  <main id="view" tabindex="-1"></main>
 </div>
-<div class="toast" id="toast"></div>
-<script>
-const IMG = {
-  "github-workflow-token": "/assets/key.svg",
-  "prs-ufpump-ainexus": "/assets/github.svg",
-  "gremaud-belegung": "/assets/calendar.svg",
-  "tailscale-plan": "/assets/rocket.svg",
-  "allianz-duden": "/assets/mail.svg",
-  "wa-drafts": "/assets/chat.svg",
-  "elias-girlfriend": "/assets/chat.svg",
-  "birthday-rsvp": "/assets/calendar.svg",
-  "platz-milano": "/assets/calendar.svg",
-  "coding-credra-koma": "/assets/code.svg"
-};
-function artFor(item) {
-  if (item.image) return item.image;
-  if (IMG[item.id]) return IMG[item.id];
-  if (item.lane === "need-you") return "/assets/key.svg";
-  if (item.lane === "worth-knowing") return "/assets/rocket.svg";
-  return "/assets/quiet.svg";
-}
-function laneLabel(lane) {
-  if (lane === "need-you") return "Need you";
-  if (lane === "worth-knowing") return "Worth knowing";
-  return "Quiet";
-}
-function toast(msg) {
-  const t = document.getElementById("toast");
-  t.textContent = msg;
-  t.classList.add("on");
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => t.classList.remove("on"), 1800);
-}
-function leave(el) {
-  return new Promise((resolve) => {
-    if (!el) return resolve();
-    el.classList.add("leaving");
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      resolve();
-    };
-    el.addEventListener("animationend", finish, { once: true });
-    setTimeout(finish, 320);
-  });
-}
-function fillEmpty() {
-  const need = document.getElementById("need");
-  const know = document.getElementById("know");
-  if (!need.querySelector(".card") && !need.querySelector(".empty")) {
-    const p = document.createElement("p");
-    p.className = "empty";
-    p.textContent = "Nothing needs you.";
-    need.appendChild(p);
-  }
-  if (!know.querySelector(".card") && !know.querySelector(".empty")) {
-    const p = document.createElement("p");
-    p.className = "empty";
-    p.textContent = "Nothing new.";
-    know.appendChild(p);
-  }
-  const n = document.getElementById("quiet").querySelectorAll(".chip").length;
-  document.getElementById("quietSum").textContent = "Quiet · " + n;
-}
-async function act(action, item, el, note) {
-  if (el && el.dataset.busy === "1") return;
-  const text = (note || "").trim();
-  if (action === "note" && !text) {
-    toast("Write a note first");
-    return;
-  }
-  if (el) el.dataset.busy = "1";
-  const payload = {
-    action,
-    item_id: item.id,
-    lane: item.lane,
-    title: item.title,
-    note: text
-  };
-  try {
-    const res = await fetch("/api/action", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) throw new Error("fail");
-    await leave(el);
-    if (el) el.remove();
-    fillEmpty();
-    const labels = { dismiss: "Dismissed", later: "Saved for later", do: "Marked done", note: "Noted" };
-    toast(labels[action] || "Saved");
-  } catch (_) {
-    if (el) delete el.dataset.busy;
-    toast("Could not save");
-  }
-}
-function cardEl(item, i) {
-  const el = document.createElement("article");
-  el.className = "card " + (item.lane || "need-you");
-  el.style.animationDelay = Math.min(i * 40, 240) + "ms";
-  el.innerHTML = `
-    <div class="card-head">
-      <img class="art" alt="" src="${artFor(item)}" />
-      <span class="lane-tag"></span>
-    </div>
-    <h3></h3>
-    <p class="body"></p>
-    ${item.note ? `<p class="saved-note"></p>` : ""}
-    <div class="row">
-      <button type="button" data-a="dismiss">Dismiss</button>
-      <button type="button" class="later" data-a="later">Later</button>
-      <button type="button" class="do" data-a="do">Do this</button>
-    </div>
-    <form class="note">
-      <input type="text" placeholder="Note" maxlength="500" />
-      <button type="submit">Send</button>
-    </form>`;
-  el.querySelector(".lane-tag").textContent = laneLabel(item.lane);
-  el.querySelector("h3").textContent = item.title || "";
-  el.querySelector(".body").textContent = item.body || "";
-  if (item.note) el.querySelector(".saved-note").textContent = item.note;
-  el.querySelectorAll("button[data-a]").forEach((btn) => {
-    btn.addEventListener("click", () => act(btn.dataset.a, item, el, el.querySelector("input").value));
-  });
-  el.querySelector("form").addEventListener("submit", (ev) => {
-    ev.preventDefault();
-    act("note", item, el, el.querySelector("input").value);
-  });
-  return el;
-}
-function chipEl(item) {
-  const el = document.createElement("div");
-  el.className = "chip";
-  el.innerHTML = `<img alt="" src="${artFor(item)}" /><span></span><button type="button">Dismiss</button>`;
-  el.querySelector("span").textContent = item.title || "";
-  el.querySelector("button").addEventListener("click", () => act("dismiss", item, el, ""));
-  return el;
-}
-async function load() {
-  const res = await fetch("/api/board");
-  const board = await res.json();
-  document.getElementById("kind").textContent = board.kind || "Brief";
-  document.getElementById("date").textContent = board.date || "";
-  const need = document.getElementById("need");
-  const know = document.getElementById("know");
-  const quiet = document.getElementById("quiet");
-  need.replaceChildren();
-  know.replaceChildren();
-  quiet.replaceChildren();
-  let ni = 0, ki = 0;
-  for (const item of board.items || []) {
-    if (item.status === "later" || item.status === "done") continue;
-    if (item.lane === "quiet") quiet.appendChild(chipEl(item));
-    else if (item.lane === "worth-knowing") know.appendChild(cardEl(item, ki++));
-    else need.appendChild(cardEl(item, ni++));
-  }
-  fillEmpty();
-}
-load();
-</script>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="tip" id="tip" role="tooltip"></div>
+<dialog id="keys" class="keys">
+  <h2>Keyboard</h2>
+  <dl>
+    <dt>J / K</dt><dd>Next / previous item</dd>
+    <dt>D</dt><dd>Done</dd>
+    <dt>L</dt><dd>Later, then 1–6 to pick when</dd>
+    <dt>X</dt><dd>Dismiss</dd>
+    <dt>R</dt><dd>Reply to Major</dd>
+    <dt>U</dt><dd>Undo last action</dd>
+    <dt>1 / 2 / 3</dt><dd>Today, Overview, Archive</dd>
+    <dt>/</dt><dd>Search the archive</dd>
+  </dl>
+  <form method="dialog"><button>Close</button></form>
+</dialog>
+<script src="/glyphs.js"></script>
+<script src="/charts.js"></script>
+<script src="/app.js"></script>
 </body>
 </html>
