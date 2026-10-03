@@ -140,75 +140,67 @@ function paintToday() {
   const quiet = items.filter((i) => i.lane === 'quiet');
   const actionable = [...need, ...know];
   if (!actionable.some((i) => i.id === state.sel)) state.sel = actionable[0] ? actionable[0].id : null;
+  paintCount(items.length);
 
-  const head = h('header', { class: 'today-head' },
-    h('div', { class: 'today-title' },
-      h('h1', { text: fmt.longDate(b.day) }),
-      h('p', { class: 'sub' },
-        h('span', { class: 'kind', text: (b.kind || 'Morning') + ' brief' }),
-        b.updated_at ? h('span', { text: 'arrived ' + fmt.time(b.updated_at) }) : null,
-      ),
+  const p = b.progress;
+  const pct = p.total ? Math.round((p.cleared / p.total) * 100) : 0;
+  const head = h('header', { class: 'page-head' },
+    h('p', { class: 'kicker', text: fmt.longDate(b.day) }),
+    h('div', { class: 'title-row' },
+      h('h1', { text: (b.kind || 'Morning') + ' Brief' }),
+      h('button', { type: 'button', class: 'text-btn', onclick: () => document.getElementById('keys').showModal() }, 'Shortcuts'),
     ),
-    strip(b),
+    h('div', { class: 'progress' },
+      h('div', { class: 'track', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': p.total, 'aria-valuenow': p.cleared, 'aria-label': 'Cleared' },
+        h('i', { style: `width:${pct}%` })),
+      h('p', { class: 'progress-note' },
+        h('span', { text: items.length ? `${p.cleared} of ${p.total} done` : 'All done' }),
+        b.updated_at ? h('span', { class: 'muted', text: 'Arrived ' + fmt.time(b.updated_at) }) : null),
+    ),
   );
 
-  const main = h('div', { class: 'today-body' });
-  main.append(section('need-you', 'Need you', need, need.length
-    ? h('div', { class: 'list' }, need.map(card))
-    : empty(b.progress.total ? 'You’ve handled everything that needed you.' : 'Nothing needs you yet. Major posts the next brief in the morning.')));
+  const main = h('div', { class: 'stack' });
+  main.append(section('Need you', need.length, need.length
+    ? group(need.map(itemRow))
+    : h('div', { class: 'group' }, h('p', { class: 'empty-row', text: p.total ? 'You’ve handled everything that needed you.' : 'Nothing yet. Major posts the next brief in the morning.' }))));
 
-  if (know.length) main.append(section('worth-knowing', 'Worth knowing', know, h('div', { class: 'list two' }, know.map(card))));
+  if (know.length) main.append(section('Worth knowing', know.length, group(know.map(itemRow))));
 
   if (quiet.length) {
-    main.append(section('quiet', 'Quiet', quiet,
-      h('div', { class: 'quiet-wrap' },
-        h('ul', { class: 'pills' }, quiet.map(pill)),
-        h('button', { type: 'button', class: 'ghost', onclick: () => bulk('dismiss', quiet) }, 'Dismiss all quiet'),
-      )));
+    main.append(section('Quiet', quiet.length, group(quiet.map(quietRow)),
+      h('button', { type: 'button', class: 'text-btn', onclick: () => bulk('dismiss', quiet) }, 'Clear all')));
   }
 
   if (b.upcoming.length) {
-    main.append(h('section', { class: 'lane upcoming' },
-      h('h2', {}, 'Coming back', h('span', { class: 'count', text: b.upcoming.length })),
-      h('ol', { class: 'queue' }, b.upcoming.slice(0, 8).map((it) => h('li', {},
+    main.append(section('Coming back', b.upcoming.length,
+      group(b.upcoming.slice(0, 8).map((it) => h('li', { class: 'mini' },
+        glyph(it),
+        h('span', { class: 'mini-title', text: it.title }),
         h('time', { datetime: it.snooze_until || '', text: fmt.when(it.snooze_until) }),
-        h('span', { class: 'q-title', text: it.title }),
-        h('button', { type: 'button', class: 'link', onclick: () => reopen(it) }, 'Bring back now'),
+        h('button', { type: 'button', class: 'text-btn', onclick: () => reopen(it) }, 'Show now'),
       ))),
-      b.upcoming.length > 8 ? h('a', { href: '/archive', class: 'more' }, `See all ${b.upcoming.length} in the archive`) : null,
-    ));
+      b.upcoming.length > 8 ? h('a', { href: '/archive', class: 'text-btn' }, 'See all') : null));
   }
 
   view.replaceChildren(head, main);
   highlight();
 }
 
-function strip(b) {
-  const p = b.progress;
-  const wrap = h('div', { class: 'strip-wrap' });
-  const bar = h('div', { class: 'strip', role: 'img', 'aria-label': `${p.cleared} of ${p.total} cleared` });
-  for (let i = 0; i < p.cleared; i++) bar.append(h('i', { class: 'seg done' }));
-  for (const it of b.items) {
-    bar.append(h('i', {
-      class: 'seg ' + it.lane + (it.id === state.sel ? ' sel' : ''),
-      'data-id': it.id,
-      title: it.title,
-      onclick: () => select(it.id, true),
-    }));
-  }
-  const left = b.items.length;
-  wrap.append(bar, h('p', { class: 'strip-note' },
-    h('b', { text: p.cleared }), ` of ${p.total} cleared`,
-    left ? h('span', { class: 'left', text: left === 1 ? '1 to go' : left + ' to go' }) : h('span', { class: 'left done', text: 'All clear' }),
-    h('button', { type: 'button', class: 'link keys-btn', onclick: () => document.getElementById('keys').showModal() }, 'Keyboard shortcuts'),
-  ));
-  return wrap;
+function paintCount(n) {
+  const el = document.getElementById('todayCount');
+  if (el) el.textContent = n ? String(n) : '';
 }
 
-function section(lane, title, items, body) {
-  return h('section', { class: 'lane ' + lane },
-    h('h2', {}, title, h('span', { class: 'count', text: items.length })),
+function section(title, count, body, action) {
+  return h('section', { class: 'section' },
+    h('div', { class: 'section-head' },
+      h('h2', {}, title, count ? h('span', { class: 'count', text: count }) : null),
+      action || null),
     body);
+}
+
+function group(rows) {
+  return h('ul', { class: 'group' }, rows);
 }
 
 function empty(msg) {
@@ -216,38 +208,38 @@ function empty(msg) {
 }
 
 function errorBlock(msg) {
-  return h('div', { class: 'error' }, h('p', { text: msg }), h('button', { type: 'button', onclick: () => location.reload() }, 'Reload'));
+  return h('div', { class: 'error' }, h('p', { text: msg }), h('button', { type: 'button', class: 'btn', onclick: () => location.reload() }, 'Reload'));
 }
 
 function badges(it) {
   const out = [];
-  if (it.resurfaced) out.push(h('span', { class: 'badge back', text: 'Snoozed, now due' }));
-  if (it.updated) out.push(h('span', { class: 'badge upd', text: 'Changed since you finished it' }));
-  if (it.days_seen > 1) out.push(h('span', { class: 'badge age', text: `Day ${it.days_seen}` }));
-  if (it.pinned) out.push(h('span', { class: 'badge', text: 'Brought back' }));
+  if (it.resurfaced) out.push(h('span', { class: 'tag', text: 'Snoozed' }));
+  if (it.updated) out.push(h('span', { class: 'tag', text: 'Updated' }));
+  if (it.days_seen > 1) out.push(h('span', { class: 'tag warn', text: `Day ${it.days_seen}` }));
+  if (it.pinned) out.push(h('span', { class: 'tag', text: 'Brought back' }));
   return out;
 }
 
-function card(it) {
+function itemRow(it) {
   const noteInput = h('input', {
-    type: 'text', maxlength: 500, placeholder: 'Reply to Major', 'aria-label': 'Reply to Major about ' + it.title,
+    type: 'text', maxlength: 500, placeholder: 'Reply to Major…', 'aria-label': 'Reply to Major about ' + it.title,
   });
-  const el = h('article', {
+  return h('li', {
     class: 'card ' + it.lane, 'data-id': it.id, tabindex: -1,
-    onclick: (ev) => { if (!ev.target.closest('button, input, a')) select(it.id); },
+    onclick: (ev) => { if (!ev.target.closest('button, input, a, form')) select(it.id); },
   },
   glyph(it),
   h('div', { class: 'card-main' },
     h('div', { class: 'card-top' },
       h('h3', {}, it.url ? h('a', { href: it.url, target: '_blank', rel: 'noopener' }, it.title) : it.title),
-      h('div', { class: 'badges' }, badges(it)),
+      h('div', { class: 'tags' }, badges(it)),
     ),
     it.body ? h('p', { class: 'body', text: it.body }) : null,
-    it.note ? h('p', { class: 'saved-note' }, h('span', { text: 'Your note' }), it.note) : null,
+    it.note ? h('p', { class: 'saved-note', text: '“' + it.note + '”' }) : null,
     h('div', { class: 'actions' },
-      h('button', { type: 'button', class: 'primary', onclick: () => act('do', it) }, 'Done', h('kbd', {}, 'D')),
-      h('button', { type: 'button', class: 'later', 'aria-haspopup': 'menu', onclick: (ev) => laterMenu(it, ev.currentTarget) }, 'Later', h('kbd', {}, 'L')),
-      h('button', { type: 'button', onclick: () => act('dismiss', it) }, 'Dismiss', h('kbd', {}, 'X')),
+      h('button', { type: 'button', class: 'btn primary', onclick: () => act('do', it) }, 'Done'),
+      h('button', { type: 'button', class: 'btn later', 'aria-haspopup': 'menu', onclick: (ev) => laterMenu(it, ev.currentTarget) }, 'Later'),
+      h('button', { type: 'button', class: 'btn', onclick: () => act('dismiss', it) }, 'Dismiss'),
       h('form', {
         class: 'reply',
         onsubmit: (ev) => {
@@ -256,16 +248,16 @@ function card(it) {
           if (!text) { noteInput.focus(); toast('Write a reply first'); return; }
           act('note', it, { note: text });
         },
-      }, noteInput, h('button', { type: 'submit', class: 'send' }, 'Send')),
+      }, noteInput, h('button', { type: 'submit', class: 'text-btn send' }, 'Send')),
     ),
   ));
-  return el;
 }
 
-function pill(it) {
-  const x = h('button', { type: 'button', 'aria-label': 'Dismiss ' + it.title, onclick: () => act('dismiss', it) });
-  x.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg>';
-  return h('li', { class: 'pill', 'data-id': it.id }, glyph(it), h('span', { text: it.title }), x);
+function quietRow(it) {
+  return h('li', { class: 'mini pill', 'data-id': it.id },
+    glyph(it),
+    h('span', { class: 'mini-title', text: it.title }),
+    h('button', { type: 'button', class: 'text-btn', 'aria-label': 'Dismiss ' + it.title, onclick: () => act('dismiss', it) }, 'Dismiss'));
 }
 
 function select(id, scroll) {
@@ -276,10 +268,10 @@ function select(id, scroll) {
 }
 
 function highlight() {
-  document.querySelectorAll('.card.sel, .seg.sel').forEach((e) => e.classList.remove('sel'));
+  document.querySelectorAll('.card.sel').forEach((e) => e.classList.remove('sel'));
   if (!state.sel) return;
   const q = CSS.escape(state.sel);
-  document.querySelectorAll(`.card[data-id="${q}"], .seg[data-id="${q}"]`).forEach((e) => e.classList.add('sel'));
+  document.querySelectorAll(`.card[data-id="${q}"]`).forEach((e) => e.classList.add('sel'));
 }
 
 function moveSel(dir) {
@@ -318,7 +310,7 @@ const DONE_MSG = { do: 'Marked done', note: 'Reply sent to Major', dismiss: 'Dis
 
 // Optimistic: the card leaves immediately; if the save fails it comes back.
 async function act(action, it, extra) {
-  const els = document.querySelectorAll(`[data-id="${CSS.escape(it.id)}"]:not(.seg)`);
+  const els = document.querySelectorAll(`[data-id="${CSS.escape(it.id)}"]`);
   if ([...els].some((e) => e.dataset.busy)) return;
   const ids = [...document.querySelectorAll('.card')].map((c) => c.dataset.id);
   const nextSel = ids[ids.indexOf(it.id) + 1] || ids[ids.indexOf(it.id) - 1] || null;
@@ -410,10 +402,10 @@ async function renderOverview() {
   const rate = s.totals.received ? Math.round((handled / s.totals.received) * 100) : 0;
 
   const tiles = h('div', { class: 'tiles' },
-    tile('Cleared in a row', s.streak, s.streak === 1 ? 'brief' : 'briefs', `Every need-you item handled the day it arrived. ${s.cleared_days} of ${s.brief_days} briefs overall.`),
-    tile('Time to act', fmt.hours(s.latency_h.median), null, s.latency_h.p75 != null ? `Median from arrival to first action. Slowest quarter: over ${fmt.hours(s.latency_h.p75)}.` : 'Shows up after your first few actions.'),
-    tile('Handled', rate + '%', null, `${handled} of ${s.totals.received} items Major sent in 30 days.`),
-    tile('Snoozed', s.queue, s.queue === 1 ? 'item' : 'items', 'Waiting to come back to today’s board.'),
+    tile('t-green', 'Cleared in a row', s.streak, s.streak === 1 ? 'brief' : 'briefs', `Every need-you item handled the day it arrived. ${s.cleared_days} of ${s.brief_days} briefs overall.`),
+    tile('t-blue', 'Time to act', fmt.hours(s.latency_h.median), null, s.latency_h.p75 != null ? `Median from arrival to first action. Slowest quarter: over ${fmt.hours(s.latency_h.p75)}.` : 'Shows up after your first few actions.'),
+    tile('t-purple', 'Handled', rate + '%', null, `${handled} of ${s.totals.received} items Major sent in 30 days.`),
+    tile('t-orange', 'Snoozed', s.queue, s.queue === 1 ? 'item' : 'items', 'Waiting to come back to today’s board.'),
   );
 
   const recvHost = h('div');
@@ -426,7 +418,7 @@ async function renderOverview() {
     : empty('Nothing has been sitting around. Items that stay open for more than a day show up here.');
 
   view.replaceChildren(
-    h('header', { class: 'page-head' }, h('h1', { text: 'Overview' }), h('p', { class: 'sub', text: 'Your last 30 days with Major' })),
+    h('header', { class: 'page-head' }, h('p', { class: 'kicker', text: 'Last 30 days' }), h('h1', { text: 'Overview' })),
     tiles,
     h('div', { class: 'panels' },
       h('section', { class: 'panel wide' }, h('h2', { text: 'What Major sent' }), recvHost),
@@ -465,8 +457,8 @@ async function renderOverview() {
   };
 }
 
-function tile(label, value, unit, note) {
-  return h('div', { class: 'tile' },
+function tile(tint, label, value, unit, note) {
+  return h('div', { class: 'tile ' + tint },
     h('p', { class: 't-label', text: label }),
     h('p', { class: 't-value' }, String(value), unit ? h('span', { text: ' ' + unit }) : null),
     h('p', { class: 't-note', text: note }));
@@ -496,7 +488,7 @@ async function renderArchive() {
   });
 
   view.replaceChildren(
-    h('header', { class: 'page-head' }, h('h1', { text: 'Archive' }), h('p', { class: 'sub', text: 'Every brief, and what happened to each item' })),
+    h('header', { class: 'page-head' }, h('p', { class: 'kicker', text: 'Every brief and what happened to it' }), h('h1', { text: 'Archive' })),
     h('div', { class: 'toolbar' }, search, filters),
     h('div', { class: 'archive' }, list, detail),
   );
@@ -525,7 +517,7 @@ async function renderArchive() {
       h('b', { text: d.getUTCDate() }),
       h('span', { text: d.toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' }) })),
     h('span', { class: 'b-main' },
-      h('span', { class: 'b-kind', text: `${b.kind} · ${b.count} items` }),
+      h('span', { class: 'b-kind' }, b.kind, h('span', { class: 'muted', text: String(b.count) })),
       outcomeBar(b.outcomes, b.count)),
     ));
   }
@@ -540,7 +532,7 @@ async function paintDetail(detail) {
     const title = a.q ? `Results for “${a.q}”` : { later: 'Snoozed', done: 'Done', dismissed: 'Dismissed' }[a.status];
     detail.replaceChildren(
       h('h2', { class: 'detail-h' }, title, h('span', { class: 'count', text: res.items.length })),
-      res.items.length ? h('ul', { class: 'rows' }, res.items.map(row)) : empty(a.q ? 'Nothing matches. Try a shorter word.' : 'Nothing here.'),
+      res.items.length ? h('ul', { class: 'rows' }, res.items.map(archiveRow)) : empty(a.q ? 'Nothing matches. Try a shorter word.' : 'Nothing here.'),
     );
     return;
   }
@@ -550,7 +542,7 @@ async function paintDetail(detail) {
     detail.replaceChildren(
       h('h2', { class: 'detail-h' }, fmt.longDate(b.day), h('span', { class: 'count', text: b.items.length })),
       h('p', { class: 'sub', text: `${b.kind} brief, arrived ${fmt.time(b.received_at)}` }),
-      h('ul', { class: 'rows' }, b.items.map(row)),
+      h('ul', { class: 'rows' }, b.items.map(archiveRow)),
     );
   } catch (_) {
     detail.replaceChildren(empty('That brief isn’t in the archive anymore.'));
@@ -559,7 +551,7 @@ async function paintDetail(detail) {
 
 const OUTCOME = { done: 'Done', later: 'Snoozed', dismissed: 'Dismissed', open: 'Open' };
 
-function row(it) {
+function archiveRow(it) {
   const status = it.status || 'open';
   let when = '';
   if (status === 'later') when = 'until ' + fmt.when(it.snooze_until);
@@ -576,7 +568,7 @@ function row(it) {
       when ? h('span', { class: 'r-when', text: when }) : null,
       status !== 'open'
         ? h('button', {
-          type: 'button', class: 'ghost small',
+          type: 'button', class: 'text-btn',
           onclick: async (ev) => {
             ev.currentTarget.disabled = true;
             if (await reopen(Object.assign({ status }, it))) renderArchive();
@@ -592,15 +584,20 @@ function row(it) {
 function paintSync(s) {
   const btn = document.getElementById('sync');
   let cls = 'ok';
+  let short = 'Up to date';
   let label = 'Major is up to date';
-  if (!s.configured) { cls = 'off'; label = 'Not connected to Major. Add a webhook URL in config.json to send your actions.'; }
-  else if (s.pending) {
+  if (!s.configured) {
+    cls = 'off'; short = 'Not connected';
+    label = 'Not connected to Major. Add a webhook URL in config.json to send your actions.';
+  } else if (s.pending) {
     cls = s.last_error ? 'warn' : 'busy';
+    short = s.last_error ? 'Retry sending' : 'Sending…';
     label = `${s.pending} ${s.pending === 1 ? 'update' : 'updates'} waiting to send` + (s.last_error ? ` (last try: ${s.last_error.reason}). Click to retry.` : '');
   } else if (s.last_ok_at) label += ', last sent ' + fmt.ago(s.last_ok_at);
   btn.className = 'sync ' + cls;
   btn.title = label;
-  btn.querySelector('.sr').textContent = label;
+  btn.setAttribute('aria-label', label);
+  btn.querySelector('.sync-label').textContent = short;
   btn.onclick = s.pending ? () => api('/api/outbox/retry', {}).then(paintSync).catch(() => {}) : null;
 }
 
@@ -632,7 +629,7 @@ document.addEventListener('keydown', (ev) => {
     }
     return;
   }
-  const typing = ev.target.matches('input, textarea, select') || ev.target.isContentEditable;
+  const typing = ev.target.matches && (ev.target.matches('input, textarea, select') || ev.target.isContentEditable);
   if (typing) {
     if (ev.key === 'Escape') ev.target.blur();
     return;
@@ -675,7 +672,14 @@ document.getElementById('theme').addEventListener('click', () => {
   const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
   root.dataset.theme = dark ? 'light' : 'dark';
   try { localStorage.setItem('theme', root.dataset.theme); } catch (_) {}
+  paintThemeBtn();
+  if (state.route === 'overview') renderOverview();
 });
+function paintThemeBtn() {
+  const dark = document.documentElement.dataset.theme !== 'light';
+  document.getElementById('theme').setAttribute('aria-label', dark ? 'Switch to light appearance' : 'Switch to dark appearance');
+}
+paintThemeBtn();
 
 // Refresh relative times and due snoozes when the tab comes back.
 document.addEventListener('visibilitychange', () => {
@@ -683,5 +687,6 @@ document.addEventListener('visibilitychange', () => {
 });
 
 api('/api/status').then(paintSync).catch(() => {});
+api('/api/board').then((b) => paintCount(b.items.length)).catch(() => {});
 connect();
 go(location.pathname, false);

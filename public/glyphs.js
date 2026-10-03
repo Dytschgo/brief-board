@@ -23,7 +23,7 @@ function glyphName(item) {
 
 function glyph(item) {
   const span = document.createElement('span');
-  span.className = 'glyph';
+  span.className = 'glyph g-' + glyphName(item);
   span.setAttribute('aria-hidden', 'true');
   const img = (item && item.image) || '';
   if (img && !/^\/assets\//.test(img) && /^(https?:)?\//.test(img)) {
