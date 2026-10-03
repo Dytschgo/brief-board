@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Major · History</title>
+<link rel="stylesheet" href="/brief.css" />
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <div>
+    <p class="brand">Major</p>
+    <h1>History</h1>
+    <p class="date" id="date"></p>
+  </div>
+  <nav>
+    <a href="/">Board</a>
+    <a href="/history" aria-current="page">History</a>
+  </nav>
+</header>
+<p class="lede">Later stays queued. Done is what you already sent. Dismissed stays buried until you put one back.</p>
+<main>
+  <section>
+    <h2 class="need" id="laterH">Later</h2>
+    <div class="stack" id="later"></div>
+  </section>
+  <section>
+    <h2 id="doneH">Done</h2>
+    <div class="stack" id="done"></div>
+  </section>
+  <details class="fold quiet">
+    <summary id="dimSum">Dismissed</summary>
+    <div class="stack" id="dismissed"></div>
+  </details>
+</main>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("on");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("on"), 1800);
+}
+function when(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("en-GB", { timeZone: "Europe/Zurich", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+function art(item) {
+  return (item && item.image) || "/assets/quiet.svg";
+}
+function row(item, from, allowBack) {
+  const el = document.createElement("article");
+  el.className = "row-item";
+  const title = item.title || (item.item && item.item.title) || item.id;
+  const body = item.body || (item.item && item.item.body) || "";
+  const note = item.note || (item.item && item.item.note) || "";
+  const at = item.acted_at || item.at || "";
+  el.innerHTML = `<img alt="" /><div><h3></h3><p class="meta"></p></div>`;
+  el.querySelector("img").src = art(item.item || item);
+  el.querySelector("h3").textContent = title;
+  const bits = [];
+  if (body) bits.push(body);
+  if (note) bits.push(note);
+  if (at) bits.push(when(at));
+  el.querySelector(".meta").textContent = bits.join(" · ");
+  if (allowBack) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Put back";
+    btn.addEventListener("click", () => restore(item.id, from, el));
+    el.appendChild(btn);
+  }
+  return el;
+}
+async function restore(id, from, el) {
+  if (el.dataset.busy === "1") return;
+  el.dataset.busy = "1";
+  try {
+    const res = await fetch("/api/reopen", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ item_id: id, from })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error("fail");
+    el.classList.add("leaving");
+    setTimeout(() => {
+      el.remove();
+      paintCounts();
+    }, 220);
+    toast("Back on the board");
+  } catch (_) {
+    delete el.dataset.busy;
+    toast("Could not restore");
+  }
+}
+function paintCounts() {
+  const n = (id) => document.getElementById(id).querySelectorAll(".row-item").length;
+  document.getElementById("laterH").textContent = "Later · " + n("later");
+  document.getElementById("doneH").textContent = "Done · " + n("done");
+  document.getElementById("dimSum").textContent = "Dismissed · " + n("dismissed");
+}
+function empty(el, msg) {
+  if (el.children.length) return;
+  const p = document.createElement("p");
+  p.className = "empty";
+  p.textContent = msg;
+  el.appendChild(p);
+}
+async function load() {
+  const res = await fetch("/api/history");
+  const data = await res.json();
+  const later = document.getElementById("later");
+  const done = document.getElementById("done");
+  const dismissed = document.getElementById("dismissed");
+  later.replaceChildren();
+  done.replaceChildren();
+  dismissed.replaceChildren();
+  for (const item of data.later || []) later.appendChild(row(item, "later", true));
+  for (const item of data.done || []) done.appendChild(row(item, "done", false));
+  for (const item of data.dismissed || []) dismissed.appendChild(row(item, "dismissed", true));
+  empty(later, "Nothing waiting.");
+  empty(done, "Nothing done yet.");
+  paintCounts();
+  document.getElementById("date").textContent = new Date().toLocaleDateString("en-GB", {
+    timeZone: "Europe/Zurich", weekday: "long", day: "numeric", month: "long"
+  });
+}
+load();
+</script>
+</body>
+</html>
